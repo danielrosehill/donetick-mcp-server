@@ -1582,19 +1582,13 @@ def sanitize_url(url: str) -> str:
         return "[URL]"
 
 
-async def main_async():
-    """Async main entry point for the MCP server."""
+async def main_async_stdio():
+    """Run the MCP server with stdio transport."""
     import sys
     from mcp.server.stdio import stdio_server
 
-    logger.info(f"Starting Donetick MCP Server v{__version__}")
-    logger.info(f"Connecting to: {sanitize_url(config.donetick_base_url)}")
-    logger.info(f"Username: {config.donetick_username}")
+    print(f"Donetick MCP Server v{__version__} starting (stdio)...", file=sys.stderr)
 
-    # Print to stderr for visibility in Claude Desktop
-    print(f"Donetick MCP Server v{__version__} starting...", file=sys.stderr)
-
-    # Run with stdio transport - this blocks until the server stops
     logger.info("Initializing stdio transport...")
     async with stdio_server() as (read_stream, write_stream):
         logger.info("Server running and ready to accept requests")
@@ -1605,43 +1599,87 @@ async def main_async():
         )
 
 
+def run_http():
+    """Run the MCP server with streamable HTTP transport."""
+    import contextlib
+    from collections.abc import AsyncIterator
+
+    import uvicorn
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    session_manager = StreamableHTTPSessionManager(
+        app=app,
+        json_response=False,
+        stateless=False,
+        session_idle_timeout=1800,
+    )
+
+    @contextlib.asynccontextmanager
+    async def lifespan(starlette_app: Starlette) -> AsyncIterator[None]:
+        async with session_manager.run():
+            logger.info(f"Streamable HTTP server ready on {config.host}:{config.port}")
+            yield
+        await cleanup()
+
+    starlette_app = Starlette(
+        debug=False,
+        routes=[
+            Mount("/mcp", app=session_manager.handle_request),
+        ],
+        lifespan=lifespan,
+    )
+
+    logger.info(f"Starting HTTP transport on {config.host}:{config.port}")
+    uvicorn.run(
+        starlette_app,
+        host=config.host,
+        port=config.port,
+        log_level=config.log_level.lower(),
+    )
+
+
 def main():
     """Main entry point for the MCP server."""
     import sys
     import traceback
 
+    logger.info(f"Starting Donetick MCP Server v{__version__}")
+    logger.info(f"Connecting to: {sanitize_url(config.donetick_base_url)}")
+    logger.info(f"Username: {config.donetick_username}")
+    logger.info(f"Transport: {config.transport}")
+
     try:
-        # Run the async main function
-        asyncio.run(main_async())
+        if config.transport == "http":
+            run_http()
+        else:
+            asyncio.run(main_async_stdio())
 
     except KeyboardInterrupt:
         logger.info("Server interrupted by user")
     except Exception as e:
-        # Log to both logger and stderr to ensure visibility in Claude Desktop logs
         error_msg = f"Server error: {e}\n{traceback.format_exc()}"
         logger.error(error_msg)
         print(error_msg, file=sys.stderr)
         sys.exit(1)
     finally:
-        # Cleanup with proper async handling
-        try:
-            # Try to get existing event loop, but handle case where there is none
+        if config.transport != "http":
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(cleanup())
-                elif not loop.is_closed():
-                    loop.run_until_complete(cleanup())
-                else:
-                    # Loop exists but is closed - create new one
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(cleanup())
+                    elif not loop.is_closed():
+                        loop.run_until_complete(cleanup())
+                    else:
+                        asyncio.run(cleanup())
+                except RuntimeError:
                     asyncio.run(cleanup())
-            except RuntimeError:
-                # No event loop exists - create new one for cleanup
-                asyncio.run(cleanup())
-        except Exception as e:
-            cleanup_error = f"Cleanup error: {e}\n{traceback.format_exc()}"
-            logger.error(cleanup_error)
-            print(cleanup_error, file=sys.stderr)
+            except Exception as e:
+                cleanup_error = f"Cleanup error: {e}\n{traceback.format_exc()}"
+                logger.error(cleanup_error)
+                print(cleanup_error, file=sys.stderr)
 
 
 if __name__ == "__main__":
@@ -1651,7 +1689,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # Catch any errors during initialization (e.g., config validation)
         error_msg = f"Failed to start server: {e}\n{traceback.format_exc()}"
         print(error_msg, file=sys.stderr)
         sys.exit(1)
