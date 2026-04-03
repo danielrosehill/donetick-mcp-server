@@ -127,6 +127,7 @@ class DonetickClient:
                 pool=2.0,
             ),
             verify=True,  # Enforce certificate verification
+            follow_redirects=True,  # Follow HTTP redirects (e.g. 301)
         )
 
     async def __aenter__(self):
@@ -169,11 +170,13 @@ class DonetickClient:
 
             data = response.json()
 
-            if "token" not in data:
-                logger.error("Login response missing 'token' field")
-                raise ValueError("Invalid login response: missing token")
+            # API returns "access_token" (may also appear as "token" in older versions)
+            token = data.get("access_token") or data.get("token")
+            if not token:
+                logger.error("Login response missing 'access_token' field")
+                raise ValueError("Invalid login response: missing access_token")
 
-            self._jwt_token = data["token"]
+            self._jwt_token = token
 
             # Update client headers with Bearer token
             self.client.headers["Authorization"] = f"Bearer {self._jwt_token}"
