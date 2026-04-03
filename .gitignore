@@ -38,6 +38,7 @@ ENV/
 # Environment Variables
 .env
 .env.local
+.pypirc
 
 # Internal Test Configuration
 .test_config
