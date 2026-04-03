@@ -447,9 +447,10 @@ class DonetickClient:
                 chore_dict["assignees"] = assignees
 
             # Add assignedTo to assignees if not present
-            if assigned_to not in assignees:
+            assignee_ids = [a["userId"] if isinstance(a, dict) else a for a in assignees]
+            if assigned_to not in assignee_ids:
                 logger.info(f"Adding assignedTo ({assigned_to}) to assignees array to satisfy API constraint")
-                assignees.append(assigned_to)
+                assignees.append({"userId": assigned_to})
                 chore_dict["assignees"] = assignees
 
         # Validate and fix frequencyMetadata ONLY for days_of_the_week frequency type
