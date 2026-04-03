@@ -41,10 +41,11 @@ class Config:
                 "Please set it to your Donetick instance URL."
             )
         else:
-            # Enforce HTTPS for security
-            if not self.donetick_base_url.startswith("https://"):
+            # Allow HTTP for local/private network instances
+            if not (self.donetick_base_url.startswith("https://") or
+                    self.donetick_base_url.startswith("http://")):
                 errors.append(
-                    f"DONETICK_BASE_URL must use HTTPS for security. "
+                    f"DONETICK_BASE_URL must use HTTP or HTTPS. "
                     f"Got: {self.donetick_base_url[:50]}"
                 )
 
