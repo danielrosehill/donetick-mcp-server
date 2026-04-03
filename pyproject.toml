@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "donetick-mcp-server"
-version = "0.3.13"
-description = "MCP server for Donetick chores management with JWT authentication, Full API support, and 20 MCP tools"
+name = "donetick-mcp"
+version = "0.4.0"
+description = "MCP server for Donetick chores management — 27 tools for chore CRUD, labels, subtasks, timers, and more"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -33,11 +33,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jason1365/donetick-mcp-server"
-Documentation = "https://github.com/jason1365/donetick-mcp-server#readme"
-Repository = "https://github.com/jason1365/donetick-mcp-server"
-Issues = "https://github.com/jason1365/donetick-mcp-server/issues"
-Changelog = "https://github.com/jason1365/donetick-mcp-server/releases"
+Homepage = "https://github.com/danielrosehill/donetick-mcp"
+Documentation = "https://github.com/danielrosehill/donetick-mcp#readme"
+Repository = "https://github.com/danielrosehill/donetick-mcp"
+Issues = "https://github.com/danielrosehill/donetick-mcp/issues"
+Changelog = "https://github.com/danielrosehill/donetick-mcp/releases"
 
 [project.optional-dependencies]
 dev = [
@@ -48,7 +48,7 @@ dev = [
 ]
 
 [project.scripts]
-donetick-mcp-server = "donetick_mcp.server:main"
+donetick-mcp = "donetick_mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
