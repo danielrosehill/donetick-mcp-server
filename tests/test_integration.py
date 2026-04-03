@@ -149,24 +149,39 @@ class TestFullChoreLifecycle:
             assert fetched_chore.id == 1
             assert fetched_chore.name == "Vacuum Living Room"
 
-            # STEP 3: Update chore (Premium feature)
+            # STEP 3: Update chore
+            # update_chore does: GET current, PUT full object, GET updated
+            updated_chore_data = {
+                "id": 1,
+                "name": "Vacuum Living Room",
+                "description": "Clean carpets thoroughly with vacuum attachment",
+                "frequencyType": "weekly",
+                "frequency": 1,
+                "isActive": True,
+                "nextDueDate": "2025-11-10T00:00:00Z",
+                "priority": 3,
+                "circleId": 1,
+                "createdAt": "2025-11-03T00:00:00Z",
+                "updatedAt": "2025-11-03T00:00:00Z",
+                "createdBy": 1,
+            }
+            # GET current chore (fetch-modify-send)
             httpx_mock.add_response(
                 url="https://test.donetick.com/api/v1/chores/1",
-                json={
-                    "id": 1,
-                    "name": "Vacuum Living Room",
-                    "description": "Clean carpets thoroughly with vacuum attachment",
-                    "frequencyType": "weekly",
-                    "frequency": 1,
-                    "isActive": True,
-                    "nextDueDate": "2025-11-10T00:00:00Z",
-                    "priority": 3,
-                    "circleId": 1,
-                    "createdAt": "2025-11-03T00:00:00Z",
-                    "updatedAt": "2025-11-03T00:00:00Z",
-                    "createdBy": 1,
-                },
+                json=updated_chore_data,
+                method="GET",
+            )
+            # PUT full chore object (id in body, not URL)
+            httpx_mock.add_response(
+                url="https://test.donetick.com/api/v1/chores/",
+                json={"message": "Chore added successfully"},
                 method="PUT",
+            )
+            # GET updated chore
+            httpx_mock.add_response(
+                url="https://test.donetick.com/api/v1/chores/1",
+                json=updated_chore_data,
+                method="GET",
             )
 
             from donetick_mcp.models import ChoreUpdate

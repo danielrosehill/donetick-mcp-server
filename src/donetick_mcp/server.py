@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import urllib.parse
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 from mcp.server import Server
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 app = Server("donetick-chores")
 
 # Global client instance (initialized on startup)
-client: Optional[DonetickClient] = None
+client: DonetickClient | None = None
 
 
 async def get_client() -> DonetickClient:
@@ -34,53 +34,44 @@ async def get_client() -> DonetickClient:
     return client
 
 
+# ==============================================================================
+# Tool Definitions
+# ==============================================================================
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     """List all available MCP tools."""
     return [
+        # ── Chore CRUD ──────────────────────────────────────────────
         Tool(
             name="list_chores",
-            description=(
-                "List all chores from Donetick. "
-                "Optionally filter by active status or assigned user. "
-                "Returns comprehensive chore details including name, description, "
-                "due dates, assignees, and status. "
-                "Use detail_level to control response size: 'brief' for essential fields only, "
-                "'full' for complete details (default)."
-            ),
+            description="List all chores. Filter by active status or assigned user. Use detail_level='brief' for compact output.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "filter_active": {
                         "type": "boolean",
-                        "description": "Filter by active status (true=active only, false=inactive only, null=all)",
+                        "description": "true=active only, false=inactive only, omit=all",
                     },
                     "assigned_to_user_id": {
                         "type": "integer",
-                        "description": "Filter by assigned user ID (null=all users)",
+                        "description": "Filter by assigned user ID",
                     },
                     "detail_level": {
                         "type": "string",
                         "enum": ["brief", "full"],
-                        "description": "Response format: 'brief' (id, name, status, assignee, dueDate) or 'full' (all fields). Default: 'full'",
+                        "description": "'brief' (id, name, status, assignee, dueDate) or 'full' (all fields). Default: full",
                     },
                 },
             },
         ),
         Tool(
             name="get_chore",
-            description=(
-                "Get details of a specific chore by its ID. "
-                "Returns complete chore information including all metadata, "
-                "assignees, labels, and scheduling details."
-            ),
+            description="Get full details of a specific chore by ID, including subtasks and labels.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "chore_id": {
-                        "type": "integer",
-                        "description": "The ID of the chore to retrieve",
-                    },
+                    "chore_id": {"type": "integer", "description": "Chore ID"},
                 },
                 "required": ["chore_id"],
             },
@@ -88,637 +79,426 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="create_chore",
             description=(
-                "Create a new chore in Donetick with easy natural language inputs. "
-                "Use simple parameters like usernames, days_of_week, and time_of_day - "
-                "they're automatically transformed to the correct API format.\n\n"
+                "Create a new chore. Use simple inputs like usernames and day names.\n\n"
                 "EXAMPLES:\n"
-                "1. Simple recurring chore:\n"
-                "   {name: 'Take out trash', days_of_week: ['Mon', 'Thu'], "
-                "time_of_day: '19:00', usernames: ['Alice']}\n\n"
-                "2. Weekly chore with reminders:\n"
-                "   {name: 'Team meeting', days_of_week: ['Tue'], time_of_day: '14:00', "
-                "remind_minutes_before: 15, usernames: ['Alice', 'Bob']}\n\n"
-                "3. With subtasks and labels:\n"
-                "   {name: 'Weekly review', days_of_week: ['Fri'], time_of_day: '17:00', "
-                "subtask_names: ['Check email', 'Update notes'], label_names: ['work', 'weekly']}\n\n"
-                "4. Daily chore with points:\n"
-                "   {name: 'Exercise', frequency_type: 'daily', time_of_day: '07:00', "
-                "points: 10, usernames: ['Bob']}\n\n"
-                "5. One-time chore:\n"
-                "   {name: 'Fix leaky faucet', due_date: '2025-11-10', "
-                "priority: 5, usernames: ['Alice']}\n\n"
-                "Returns the created chore with its assigned ID and all metadata."
+                "- Simple: {name: 'Take out trash', days_of_week: ['Mon','Thu'], time_of_day: '19:00', usernames: ['Alice']}\n"
+                "- One-time: {name: 'Fix faucet', due_date: '2025-11-10', priority: 3}\n"
+                "- With subtasks: {name: 'Weekly review', subtask_names: ['Check email','Update notes']}\n\n"
+                "If no usernames provided, chore is assigned to ANYONE in the circle (round-robin)."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    # Basic Information
                     "name": {
                         "type": "string",
-                        "description": "Chore name (required, 1-200 characters)",
+                        "description": "Chore name (required, 1-200 chars)",
                     },
                     "description": {
                         "type": "string",
-                        "description": "Chore description (optional, max 5000 characters)",
+                        "description": "Chore description",
                     },
                     "due_date": {
                         "type": "string",
-                        "description": "Due date in YYYY-MM-DD or RFC3339 format (optional)",
+                        "description": "Due date: YYYY-MM-DD or RFC3339",
                     },
-                    "created_by": {
-                        "type": "integer",
-                        "description": "User ID of the creator (optional)",
-                    },
-
-                    # Recurrence/Frequency
                     "frequency_type": {
                         "type": "string",
-                        "enum": [
-                            "once",           # One-time chore
-                            "daily",          # Every day
-                            "weekly",         # Every week
-                            "monthly",        # Every month
-                            "yearly",         # Every year
-                            "interval_based", # Custom interval
-                            "interval",       # Alias for interval_based
-                            "days_of_the_week", # Specific days (Mon, Wed, Fri)
-                            "day_of_the_month", # Specific day of month (e.g., 15th)
-                            "adaptive",       # Smart scheduling based on completion patterns
-                            "trigger",        # Triggered by events
-                            "no_repeat"       # Alias for once
-                        ],
-                        "description": (
-                            "How often the chore repeats (default: once).\n\n"
-                            "FREQUENCY TYPES:\n"
-                            "• once / no_repeat: One-time chore, no recurrence\n"
-                            "• daily: Repeats every day at specified time\n"
-                            "• weekly: Repeats every week (use with frequency for bi-weekly: frequency=2)\n"
-                            "• days_of_the_week: Specific days (Mon, Wed, Fri) - BEST for multiple days/week\n"
-                            "  → Use with days_of_week parameter: ['Mon', 'Wed', 'Fri']\n"
-                            "• monthly: Repeats every month\n"
-                            "• yearly: Repeats every year\n"
-                            "• day_of_the_month: Specific day of month (e.g., 15th of each month)\n"
-                            "• interval_based / interval: Custom interval (e.g., every N days)\n"
-                            "• adaptive: Smart scheduling based on completion patterns\n"
-                            "• trigger: Triggered by events or conditions\n\n"
-                            "TIP: For chores on specific days (Mon/Wed/Fri), use frequency_type='days_of_the_week' "
-                            "with days_of_week=['Mon', 'Wed', 'Fri'] instead of frequency_type='weekly'"
-                        ),
+                        "enum": ["once", "daily", "weekly", "monthly", "yearly",
+                                 "days_of_the_week", "day_of_the_month",
+                                 "interval_based", "adaptive", "no_repeat"],
+                        "description": "How often it repeats (default: once). Use 'days_of_the_week' with days_of_week param for specific days.",
                     },
                     "frequency": {
                         "type": "integer",
-                        "description": "Frequency multiplier (e.g., 1=weekly, 2=biweekly, default: 1)",
+                        "description": "Multiplier (e.g., 2=biweekly). Default: 1",
                         "minimum": 1,
-                    },
-                    "frequency_metadata": {
-                        "type": "object",
-                        "description": "Additional frequency config (e.g., {\"days\": [1,3,5], \"time\": \"09:00\"})",
                     },
                     "is_rolling": {
                         "type": "boolean",
-                        "description": "Rolling schedule (next due based on completion) vs fixed (default: false)",
-                    },
-
-                    # User Assignment
-                    "assigned_to": {
-                        "type": "integer",
-                        "description": "Primary assigned user ID (optional)",
-                    },
-                    "assignees": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                        "description": "Multiple assignees as array of {\"userId\": int} objects",
-                    },
-                    "assign_strategy": {
-                        "type": "string",
-                        "enum": [
-                            "least_completed",
-                            "least_assigned",
-                            "round_robin",
-                            "random",
-                            "keep_last_assigned",
-                            "random_except_last_assigned",
-                            "no_assignee"
-                        ],
-                        "description": "Assignment strategy: least_completed, least_assigned, round_robin, random, keep_last_assigned, random_except_last_assigned, no_assignee (default: least_completed)",
-                    },
-
-                    # Notifications
-                    "notification": {
-                        "type": "boolean",
-                        "description": "Enable notifications for this chore (default: false)",
-                    },
-                    "nagging": {
-                        "type": "boolean",
-                        "description": "Enable nagging/reminder notifications (default: false)",
-                    },
-                    "predue": {
-                        "type": "boolean",
-                        "description": "Enable pre-due date notifications (default: false)",
-                    },
-
-                    # Organization
-                    "priority": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 4,
-                        "description": "Priority level: 0=unset, 1=lowest, 2=low, 3=medium, 4=highest (optional)",
-                    },
-                    "labels": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Label tags for categorization (e.g., [\"cleaning\", \"outdoor\"])",
-                    },
-
-                    # Status
-                    "is_active": {
-                        "type": "boolean",
-                        "description": "Active status - inactive chores are hidden (default: true)",
-                    },
-                    "is_private": {
-                        "type": "boolean",
-                        "description": "Private chore visible only to creator (default: false)",
-                    },
-
-                    # Gamification
-                    "points": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Points awarded for completion (optional)",
-                    },
-
-                    # Advanced
-                    "sub_tasks": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                        "description": "Sub-tasks/checklist items (optional)",
-                    },
-
-                    # === NATURAL LANGUAGE INPUTS (Simplified) ===
-                    # These are automatically transformed to the API format
-
-                    "usernames": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "EASY: Assign by usernames instead of IDs (e.g., ['Alice', 'Bob']). First user becomes primary assignee.",
-                    },
-                    "label_names": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "EASY: Label by names instead of IDs (e.g., ['cleaning', 'urgent'])",
+                        "description": "Next due based on completion (true) vs fixed schedule (false). Default: false",
                     },
                     "days_of_week": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": (
-                            "EASY: Days as short names (e.g., ['Mon', 'Wed', 'Fri'] or ['monday', 'wednesday']). "
-                            "Auto-sets frequency_type to days_of_the_week.\n\n"
-                            "REQUIRED when frequency_type='days_of_the_week'.\n"
-                            "Valid values: Mon/Monday, Tue/Tuesday, Wed/Wednesday, Thu/Thursday, Fri/Friday, Sat/Saturday, Sun/Sunday"
-                        ),
+                        "description": "Days as short names: ['Mon','Wed','Fri']. Auto-sets frequency_type to days_of_the_week.",
                     },
                     "time_of_day": {
                         "type": "string",
-                        "description": "EASY: Time in HH:MM format (e.g., '16:00' for 4pm)",
+                        "description": "Time in HH:MM format (e.g., '16:00')",
                     },
                     "timezone": {
                         "type": "string",
-                        "description": "Timezone name (default: America/New_York). Used with days_of_week and time_of_day.",
+                        "description": "IANA timezone (default: America/New_York)",
                     },
-                    "remind_minutes_before": {
+                    "usernames": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Assign by username/display name. First becomes primary assignee. If omitted, assigned to anyone.",
+                    },
+                    "assign_strategy": {
+                        "type": "string",
+                        "enum": ["least_completed", "least_assigned", "round_robin",
+                                 "random", "keep_last_assigned", "random_except_last_assigned"],
+                        "description": "How to rotate assignment. Default: round_robin (when anyone) or least_completed (when specific users)",
+                    },
+                    "label_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Labels by name (e.g., ['cleaning','urgent']). Must exist first — use create_label.",
+                    },
+                    "priority": {
                         "type": "integer",
-                        "description": "EASY: Remind X minutes before due time (e.g., 15 for 15 minutes before)",
+                        "minimum": 0,
+                        "maximum": 4,
+                        "description": "0=unset, 1=lowest, 2=low, 3=medium, 4=highest",
                     },
-                    "remind_at_due_time": {
-                        "type": "boolean",
-                        "description": "EASY: Also remind exactly at due time (default: false)",
+                    "points": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Points awarded on completion",
                     },
-                    "enable_nagging": {
+                    "is_private": {
                         "type": "boolean",
-                        "description": "EASY: Enable nagging notifications - repeated reminders if not completed (default: false)",
-                    },
-                    "enable_predue": {
-                        "type": "boolean",
-                        "description": "EASY: Enable pre-due notifications - reminders before due date arrives (default: false)",
+                        "description": "Visible only to creator. Default: false",
                     },
                     "subtask_names": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "EASY: Subtask names as simple strings (e.g., ['Do homework', 'Check work'])",
+                        "description": "Checklist items: ['Step 1','Step 2']",
+                    },
+                    "remind_minutes_before": {
+                        "type": "integer",
+                        "description": "Remind X minutes before due time",
+                    },
+                    "remind_at_due_time": {
+                        "type": "boolean",
+                        "description": "Remind exactly at due time. Default: false",
+                    },
+                    "enable_nagging": {
+                        "type": "boolean",
+                        "description": "Repeated reminders until completed. Default: false",
+                    },
+                    "require_approval": {
+                        "type": "boolean",
+                        "description": "Require approval to mark complete. Default: false",
                     },
                 },
                 "required": ["name"],
             },
         ),
         Tool(
-            name="complete_chore",
-            description=(
-                "Mark a chore as complete. "
-                "Optionally specify which user completed the chore. "
-                "Returns the updated chore with completion timestamp."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "chore_id": {
-                        "type": "integer",
-                        "description": "The ID of the chore to mark complete",
-                    },
-                    "completed_by": {
-                        "type": "integer",
-                        "description": "User ID who completed the chore (optional)",
-                    },
-                },
-                "required": ["chore_id"],
-            },
-        ),
-        Tool(
             name="update_chore",
             description=(
-                "Update an existing chore with new values. "
-                "Can modify any chore property including name, description, schedule, assignees, "
-                "priority, points, labels, privacy settings, and more. "
-                "Only provide fields you want to change - other fields remain unchanged."
+                "Update any chore fields. Only provide fields you want to change.\n\n"
+                "Supports: name, description, schedule/frequency, assignees, priority, "
+                "labels (add/remove/set by name), notifications, and more."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "chore_id": {
-                        "type": "integer",
-                        "description": "The ID of the chore to update",
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "New chore name",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "New chore description",
-                    },
-                    "nextDueDate": {
-                        "type": "string",
-                        "description": "New due date (ISO 8601 format, e.g., '2025-11-17')",
-                    },
+                    "chore_id": {"type": "integer", "description": "Chore ID to update"},
+                    "name": {"type": "string", "description": "New name"},
+                    "description": {"type": "string", "description": "New description"},
+                    "nextDueDate": {"type": "string", "description": "New due date (ISO 8601)"},
                     "priority": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 4,
-                        "description": "Priority level (0=unset, 1=lowest, 4=highest)",
+                        "type": "integer", "minimum": 0, "maximum": 4,
+                        "description": "Priority: 0=unset, 1=lowest, 4=highest",
                     },
-                    "points": {
-                        "type": "integer",
-                        "description": "Points awarded for completion",
-                    },
-                    "isActive": {
-                        "type": "boolean",
-                        "description": "Enable/disable chore",
-                    },
-                    "isPrivate": {
-                        "type": "boolean",
-                        "description": "Hide from other circle members",
-                    },
-                    "requireApproval": {
-                        "type": "boolean",
-                        "description": "Requires approval to mark complete",
-                    },
+                    "points": {"type": "integer", "description": "Points for completion"},
+                    "isActive": {"type": "boolean", "description": "Enable/disable chore"},
+                    "isPrivate": {"type": "boolean", "description": "Hide from circle"},
+                    "requireApproval": {"type": "boolean", "description": "Require approval"},
+                    # Schedule
                     "frequencyType": {
                         "type": "string",
-                        "description": "Frequency type (once, daily, weekly, monthly, yearly, days_of_the_week)",
+                        "description": "Frequency: once, daily, weekly, days_of_the_week, monthly, yearly, etc.",
                     },
-                    "frequency": {
-                        "type": "integer",
-                        "description": "Frequency value (e.g., 2 for every 2 weeks)",
-                    },
-                    "frequencyMetadata": {
-                        "type": "object",
-                        "description": "Frequency metadata with days, time, timezone, weekPattern",
-                    },
-                    "isRolling": {
-                        "type": "boolean",
-                        "description": "Rolling schedule (based on completion) vs fixed schedule",
+                    "frequency": {"type": "integer", "description": "Frequency multiplier"},
+                    "frequencyMetadata": {"type": "object", "description": "Frequency config (days, time, timezone)"},
+                    "isRolling": {"type": "boolean", "description": "Rolling vs fixed schedule"},
+                    # Assignment
+                    "assignee_usernames": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Reassign by username(s). First becomes primary assignee.",
                     },
                     "assignStrategy": {
                         "type": "string",
-                        "enum": [
-                            "least_completed",
-                            "least_assigned",
-                            "round_robin",
-                            "random",
-                            "keep_last_assigned",
-                            "random_except_last_assigned",
-                            "no_assignee",
-                        ],
+                        "enum": ["least_completed", "least_assigned", "round_robin",
+                                 "random", "keep_last_assigned", "random_except_last_assigned"],
                         "description": "Assignment rotation strategy",
                     },
-                    "notification": {
-                        "type": "boolean",
-                        "description": "Enable notifications",
+                    # Label management
+                    "add_label_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Add labels by name (keeps existing)",
                     },
-                    "notificationMetadata": {
-                        "type": "object",
-                        "description": "Notification settings (templates, nagging, predue)",
+                    "remove_label_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Remove labels by name",
                     },
-                    "completionWindow": {
-                        "type": "integer",
-                        "description": "SECONDS before due time when early completion is allowed",
+                    "set_label_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Replace ALL labels with these (by name)",
                     },
-                    "deadlineOffset": {
-                        "type": "integer",
-                        "description": "SECONDS after due time for grace period",
-                    },
+                    # Notifications
+                    "notification": {"type": "boolean", "description": "Enable notifications"},
+                    "notificationMetadata": {"type": "object", "description": "Notification settings"},
                 },
                 "required": ["chore_id"],
             },
         ),
         Tool(
             name="delete_chore",
-            description=(
-                "Delete a chore permanently. "
-                "Note: Only the chore creator can delete a chore. "
-                "Returns confirmation of deletion."
-            ),
+            description="Delete a chore permanently. Only the creator can delete.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "chore_id": {
-                        "type": "integer",
-                        "description": "The ID of the chore to delete",
-                    },
+                    "chore_id": {"type": "integer", "description": "Chore ID to delete"},
                 },
                 "required": ["chore_id"],
             },
         ),
         Tool(
-            name="update_chore_priority",
-            description=(
-                "Update a chore's priority level (0-4). "
-                "Use this to adjust how urgent a chore is without editing other details. "
-                "0=unset, 1=lowest, 2=low, 3=medium, 4=highest. "
-                "Returns the updated chore."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "chore_id": {
-                        "type": "integer",
-                        "description": "The ID of the chore to update",
-                    },
-                    "priority": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 4,
-                        "description": "New priority level (0=unset, 1=lowest, 4=highest)",
-                    },
-                },
-                "required": ["chore_id", "priority"],
-            },
+            name="list_archived_chores",
+            description="List all archived (hidden) chores.",
+            inputSchema={"type": "object", "properties": {}},
         ),
+
+        # ── Chore Actions ───────────────────────────────────────────
         Tool(
-            name="update_chore_assignee",
-            description=(
-                "Reassign a chore to a different circle member. "
-                "Use this to dynamically change who is responsible for a chore. "
-                "Get member IDs from list_circle_members or get_circle_members. "
-                "Returns the updated chore."
-            ),
+            name="complete_chore",
+            description="Mark a chore as complete.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "chore_id": {
-                        "type": "integer",
-                        "description": "The ID of the chore to update",
-                    },
-                    "user_id": {
-                        "type": "integer",
-                        "description": "User ID of the new assignee (from list_circle_members)",
-                    },
+                    "chore_id": {"type": "integer", "description": "Chore ID"},
+                    "completed_by": {"type": "integer", "description": "User ID who completed it (optional)"},
                 },
-                "required": ["chore_id", "user_id"],
+                "required": ["chore_id"],
             },
         ),
         Tool(
             name="skip_chore",
-            description=(
-                "Skip a chore without marking it complete. "
-                "For recurring chores, this schedules the next occurrence without "
-                "completing the current one. Useful for chores that aren't needed this cycle. "
-                "One-time chores will be marked as inactive. "
-                "Returns the updated chore with the new due date."
-            ),
+            description="Skip a chore without completing. For recurring chores, schedules the next occurrence.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "chore_id": {
-                        "type": "integer",
-                        "description": "The ID of the chore to skip",
-                    },
+                    "chore_id": {"type": "integer", "description": "Chore ID"},
                 },
                 "required": ["chore_id"],
             },
         ),
         Tool(
-            name="update_subtask_completion",
-            description=(
-                "Mark a subtask as complete or incomplete within a chore. "
-                "This allows tracking progress on chores with multiple steps without "
-                "completing the entire chore. Useful for checklists and multi-step tasks. "
-                "Returns the updated chore with subtask progress."
-            ),
+            name="archive_chore",
+            description="Archive a chore (soft-delete / hide). Can be unarchived later.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "chore_id": {
-                        "type": "integer",
-                        "description": "The ID of the chore containing the subtask",
-                    },
-                    "subtask_id": {
-                        "type": "integer",
-                        "description": "The ID of the subtask to update",
-                    },
-                    "completed": {
-                        "type": "boolean",
-                        "description": "True to mark complete, False to mark incomplete",
-                    },
+                    "chore_id": {"type": "integer", "description": "Chore ID"},
+                },
+                "required": ["chore_id"],
+            },
+        ),
+        Tool(
+            name="unarchive_chore",
+            description="Restore a previously archived chore.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chore_id": {"type": "integer", "description": "Chore ID"},
+                },
+                "required": ["chore_id"],
+            },
+        ),
+        Tool(
+            name="approve_chore",
+            description="Approve a chore completion that requires approval.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chore_id": {"type": "integer", "description": "Chore ID"},
+                },
+                "required": ["chore_id"],
+            },
+        ),
+        Tool(
+            name="reject_chore",
+            description="Reject a chore completion that requires approval.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chore_id": {"type": "integer", "description": "Chore ID"},
+                },
+                "required": ["chore_id"],
+            },
+        ),
+        Tool(
+            name="update_due_date",
+            description="Quickly reschedule a chore's due date without a full update.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chore_id": {"type": "integer", "description": "Chore ID"},
+                    "due_date": {"type": "string", "description": "New due date (YYYY-MM-DD or RFC3339)"},
+                },
+                "required": ["chore_id", "due_date"],
+            },
+        ),
+
+        # ── Timer ────────────────────────────────────────────────────
+        Tool(
+            name="start_chore_timer",
+            description="Start the time tracker for a chore.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chore_id": {"type": "integer", "description": "Chore ID"},
+                },
+                "required": ["chore_id"],
+            },
+        ),
+        Tool(
+            name="pause_chore_timer",
+            description="Pause the time tracker for a chore.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chore_id": {"type": "integer", "description": "Chore ID"},
+                },
+                "required": ["chore_id"],
+            },
+        ),
+
+        # ── Subtasks ────────────────────────────────────────────────
+        Tool(
+            name="update_subtask_completion",
+            description="Mark a subtask complete or incomplete.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chore_id": {"type": "integer", "description": "Parent chore ID"},
+                    "subtask_id": {"type": "integer", "description": "Subtask ID"},
+                    "completed": {"type": "boolean", "description": "true=complete, false=incomplete"},
                 },
                 "required": ["chore_id", "subtask_id", "completed"],
             },
         ),
         Tool(
-            name="list_labels",
-            description=(
-                "List all labels in the circle. "
-                "Returns all available labels with their IDs, names, and colors. "
-                "Use these labels to organize and categorize chores."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
-        ),
-        Tool(
-            name="create_label",
-            description=(
-                "Create a new label for organizing chores. "
-                "Labels help categorize and filter chores by type, location, or any custom criteria. "
-                "Optionally specify a color in hex format (e.g., '#FF5733')."
-            ),
+            name="create_subtask",
+            description="Add a new subtask/checklist item to an existing chore.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Label name (required)",
-                    },
-                    "color": {
-                        "type": "string",
-                        "description": "Label color in hex format (e.g., '#80d8ff'), optional",
-                    },
+                    "chore_id": {"type": "integer", "description": "Parent chore ID"},
+                    "name": {"type": "string", "description": "Subtask name"},
+                },
+                "required": ["chore_id", "name"],
+            },
+        ),
+        Tool(
+            name="delete_subtask",
+            description="Remove a subtask from a chore.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "chore_id": {"type": "integer", "description": "Parent chore ID"},
+                    "subtask_id": {"type": "integer", "description": "Subtask ID to remove"},
+                },
+                "required": ["chore_id", "subtask_id"],
+            },
+        ),
+        Tool(
+            name="convert_chore_to_subtask",
+            description="Convert a standalone chore into a subtask of another chore. Deletes the original chore and creates a subtask with its name on the target.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "source_chore_id": {"type": "integer", "description": "Chore to convert (will be deleted)"},
+                    "target_chore_id": {"type": "integer", "description": "Chore to add the subtask to"},
+                },
+                "required": ["source_chore_id", "target_chore_id"],
+            },
+        ),
+
+        # ── Labels ───────────────────────────────────────────────────
+        Tool(
+            name="list_labels",
+            description="List all labels in the circle.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="create_label",
+            description="Create a new label for categorizing chores.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Label name"},
+                    "color": {"type": "string", "description": "Hex color (e.g., '#FF5733')"},
                 },
                 "required": ["name"],
             },
         ),
         Tool(
             name="update_label",
-            description=(
-                "Update an existing label's name and/or color. "
-                "Use this to rename labels or change their colors for better organization."
-            ),
+            description="Rename a label or change its color.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "label_id": {
-                        "type": "integer",
-                        "description": "The ID of the label to update",
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "New label name",
-                    },
-                    "color": {
-                        "type": "string",
-                        "description": "New label color in hex format (e.g., '#80d8ff'), optional",
-                    },
+                    "label_id": {"type": "integer", "description": "Label ID"},
+                    "name": {"type": "string", "description": "New name"},
+                    "color": {"type": "string", "description": "New hex color"},
                 },
                 "required": ["label_id", "name"],
             },
         ),
         Tool(
             name="delete_label",
-            description=(
-                "Delete a label permanently. "
-                "This will remove the label from all chores that use it. "
-                "Use with caution as this action cannot be undone."
-            ),
+            description="Delete a label. Removes it from all chores.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "label_id": {
-                        "type": "integer",
-                        "description": "The ID of the label to delete",
-                    },
+                    "label_id": {"type": "integer", "description": "Label ID"},
                 },
                 "required": ["label_id"],
             },
         ),
+
+        # ── Users & Circle ──────────────────────────────────────────
         Tool(
-            name="get_circle_members",
-            description=(
-                "Get all members in the circle (household/team). "
-                "Returns user information including user IDs, usernames, display names, "
-                "roles (admin/member), active status, and points. "
-                "Use this to see who you can assign chores to."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
-        ),
-        Tool(
-            name="list_circle_users",
-            description=(
-                "List all users in the circle with basic information. "
-                "Returns user IDs, usernames, display names, email addresses, "
-                "roles, points earned, and active status. "
-                "Similar to get_circle_members but may include additional user details."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
+            name="list_circle_members",
+            description="List all members in the circle with IDs, usernames, roles, and points. Use this to find user IDs for assignment.",
+            inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="get_user_profile",
-            description=(
-                "Get the current user's detailed profile information. "
-                "Returns comprehensive user data including notification preferences, "
-                "webhook configuration, storage usage, points, and account metadata. "
-                "Use this to view or manage personal settings and statistics."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
+            description="Get the current user's profile (points, storage, notification config).",
+            inputSchema={"type": "object", "properties": {}},
         ),
+
+        # ── History & Analytics ──────────────────────────────────────
         Tool(
             name="get_chore_history",
-            description=(
-                "Get completion history for a specific chore. "
-                "Returns all completion records including when the chore was completed, "
-                "by whom, completion notes, and points awarded. "
-                "Useful for tracking chore completion patterns and accountability."
-            ),
+            description="Get completion history. If chore_id provided, returns history for that chore. Otherwise returns all chores history with pagination.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "chore_id": {
-                        "type": "integer",
-                        "description": "The ID of the chore to fetch history for",
-                    },
-                },
-                "required": ["chore_id"],
-            },
-        ),
-        Tool(
-            name="get_all_chores_history",
-            description=(
-                "Get completion history for all chores with pagination support. "
-                "Returns completion records across all chores in the circle, "
-                "showing who completed what and when. "
-                "Use limit and offset for pagination through large result sets."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of history entries to return (default: 50, max: 200)",
-                        "minimum": 1,
-                        "maximum": 200,
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "description": "Number of entries to skip for pagination (default: 0)",
-                        "minimum": 0,
-                    },
+                    "chore_id": {"type": "integer", "description": "Specific chore ID (optional — omit for all chores)"},
+                    "limit": {"type": "integer", "description": "Max entries (default: 50, max: 200)", "minimum": 1, "maximum": 200},
+                    "offset": {"type": "integer", "description": "Skip entries for pagination (default: 0)", "minimum": 0},
                 },
             },
         ),
         Tool(
             name="get_chore_details",
-            description=(
-                "Get detailed chore information including completion statistics and analytics. "
-                "Returns extended details not available in standard get_chore: "
-                "total completion count, last completion date and user, average duration, "
-                "and recent completion history. "
-                "Useful for performance analysis and chore optimization."
-            ),
+            description="Get chore with completion statistics: total count, last completion, average duration, recent history.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "chore_id": {
-                        "type": "integer",
-                        "description": "The ID of the chore to fetch detailed statistics for",
-                    },
+                    "chore_id": {"type": "integer", "description": "Chore ID"},
                 },
                 "required": ["chore_id"],
             },
@@ -726,839 +506,441 @@ async def list_tools() -> list[Tool]:
     ]
 
 
+# ==============================================================================
+# Tool Handlers
+# ==============================================================================
+
 @app.call_tool()
 async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     """Handle tool execution."""
     try:
-        client = await get_client()
+        c = await get_client()
 
+        # ── Chore CRUD ──────────────────────────────────────────
         if name == "list_chores":
-            filter_active = arguments.get("filter_active")
-            assigned_to_user_id = arguments.get("assigned_to_user_id")
-            detail_level = arguments.get("detail_level", "full")
-
-            chores = await client.list_chores(
-                filter_active=filter_active,
-                assigned_to_user_id=assigned_to_user_id,
+            chores = await c.list_chores(
+                filter_active=arguments.get("filter_active"),
+                assigned_to_user_id=arguments.get("assigned_to_user_id"),
             )
-
-            # Format response
             if not chores:
                 return [TextContent(type="text", text="No chores found.")]
 
-            # Apply detail level filter
+            detail_level = arguments.get("detail_level", "full")
             if detail_level == "brief":
-                # Brief format: only essential fields
-                brief_chores = []
-                for chore in chores:
-                    brief_chores.append({
-                        "id": chore.id,
-                        "name": chore.name,
-                        "isActive": chore.isActive,
-                        "assignedTo": chore.assignedTo,
-                        "nextDueDate": chore.nextDueDate,
-                    })
-                result = {
-                    "count": len(brief_chores),
-                    "chores": brief_chores,
-                }
-            else:
-                # Full format: all fields
                 result = {
                     "count": len(chores),
-                    "chores": [chore.model_dump() for chore in chores],
+                    "chores": [
+                        {"id": ch.id, "name": ch.name, "isActive": ch.isActive,
+                         "assignedTo": ch.assignedTo, "nextDueDate": ch.nextDueDate}
+                        for ch in chores
+                    ],
                 }
-
+            else:
+                result = {"count": len(chores), "chores": [ch.model_dump() for ch in chores]}
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "get_chore":
-            chore_id = arguments["chore_id"]
-            chore = await client.get_chore(chore_id)
-
+            chore = await c.get_chore(arguments["chore_id"])
             if not chore:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Chore with ID {chore_id} not found.",
-                    )
-                ]
-
+                return [TextContent(type="text", text=f"Chore {arguments['chore_id']} not found.")]
             return [TextContent(type="text", text=json.dumps(chore.model_dump(), indent=2))]
 
         elif name == "create_chore":
-            # ===== Handle User Assignment =====
-            assigned_to = arguments.get("assigned_to")
-            assignees = arguments.get("assignees", [])
-            usernames = arguments.get("usernames", [])
-
-            # If usernames provided, lookup IDs
-            if usernames:
-                username_map = await client.lookup_user_ids(usernames)
-
-                # Check if all usernames were found
-                if not username_map or len(username_map) != len(usernames):
-                    # Find which usernames were not found
-                    missing = [u for u in usernames if u not in (username_map or {})]
-                    return [
-                        TextContent(
-                            type="text",
-                            text=(
-                                f"Error: Could not find user(s) in circle: {', '.join(missing)}\n\n"
-                                "💡 Hint: Use get_circle_members to see available users.\n"
-                                "   Valid users must be members of your circle/household."
-                            )
-                        )
-                    ]
-
-                # Use first username as primary assignee
-                assigned_to = username_map.get(usernames[0])
-                # Build assignees list
-                assignees = [{"userId": uid} for uid in username_map.values()]
-
-            # ===== Handle Labels =====
-            labels_v2 = arguments.get("labels_v2", [])
-            label_names = arguments.get("label_names", [])
-
-            # If label names provided, lookup IDs
-            if label_names:
-                label_map = await client.lookup_label_ids(label_names)
-
-                # Check if all labels were found
-                missing_labels = [name for name in label_names if name not in (label_map or {})]
-
-                if missing_labels:
-                    return [
-                        TextContent(
-                            type="text",
-                            text=(
-                                f"Error: Label(s) not found: {', '.join(missing_labels)}\n\n"
-                                "💡 Hint: Use list_labels to see available labels.\n"
-                                "   You can create missing labels with create_label tool."
-                            )
-                        )
-                    ]
-
-                labels_v2 = [{"id": label_id} for label_id in label_map.values()]
-
-            # ===== Handle Frequency Metadata =====
-            frequency_type = arguments.get("frequency_type", "once")
-            frequency_metadata = arguments.get("frequency_metadata", {})
-            days_of_week = arguments.get("days_of_week", [])
-            time_of_day = arguments.get("time_of_day")
-            timezone = arguments.get("timezone", "America/New_York")
-
-            # Auto-set frequency type if days are specified (MUST happen before transform!)
-            if days_of_week and frequency_type == "once":
-                frequency_type = "days_of_the_week"
-
-            # Validate days_of_week is provided for days_of_the_week frequency type
-            if frequency_type == "days_of_the_week" and not days_of_week:
-                return [
-                    TextContent(
-                        type="text",
-                        text=(
-                            "Error: days_of_week parameter is required when frequency_type='days_of_the_week'.\n\n"
-                            "Please provide which days the chore should repeat on, for example:\n"
-                            "  days_of_week: ['Mon', 'Wed', 'Fri']\n"
-                            "  days_of_week: ['Monday', 'Tuesday', 'Thursday']\n\n"
-                            "Valid day values: Mon/Monday, Tue/Tuesday, Wed/Wednesday, Thu/Thursday, "
-                            "Fri/Friday, Sat/Saturday, Sun/Sunday"
-                        ),
-                    )
-                ]
-
-            # If simple day/time inputs provided, transform to API format
-            if days_of_week or time_of_day:
-                frequency_metadata = client.transform_frequency_metadata(
-                    frequency_type=frequency_type,
-                    days_of_week=days_of_week,
-                    time=time_of_day,
-                    timezone=timezone
-                )
-
-            # ===== Handle Notification Metadata =====
-            notification_metadata = arguments.get("notification_metadata", {})
-            remind_minutes_before = arguments.get("remind_minutes_before")
-            remind_at_due_time = arguments.get("remind_at_due_time", False)
-            enable_nagging = arguments.get("enable_nagging", False)
-            enable_predue = arguments.get("enable_predue", False)
-
-            # If any notification inputs provided, transform to API format
-            if remind_minutes_before is not None or remind_at_due_time or enable_nagging or enable_predue:
-                offset_minutes = -abs(remind_minutes_before) if remind_minutes_before else None
-                notification_metadata = client.transform_notification_metadata(
-                    offset_minutes=offset_minutes,
-                    remind_at_due_time=remind_at_due_time,
-                    nagging=enable_nagging,
-                    predue=enable_predue
-                )
-
-            # ===== Handle Subtasks =====
-            sub_tasks = arguments.get("sub_tasks", [])
-            subtask_names = arguments.get("subtask_names", [])
-
-            # If simple subtask names provided, transform to API format
-            if subtask_names:
-                sub_tasks = client.transform_subtasks(subtask_names)
-
-            # ===== Calculate Due Date =====
-            due_date = arguments.get("due_date")
-            if not due_date and frequency_type != "once":
-                # Auto-calculate initial due date based on frequency
-                due_date = client.calculate_due_date(
-                    frequency_type=frequency_type,
-                    frequency_metadata=frequency_metadata,
-                    timezone=timezone
-                )
-
-            # ===== Build ChoreCreate Object =====
-            chore_create = ChoreCreate(
-                # Basic Information
-                name=arguments["name"],
-                description=arguments.get("description"),
-                dueDate=due_date,
-                createdBy=arguments.get("created_by"),
-
-                # Recurrence/Frequency
-                frequencyType=frequency_type,
-                frequency=arguments.get("frequency", 1),
-                frequencyMetadata=frequency_metadata,
-                isRolling=arguments.get("is_rolling", False),
-
-                # User Assignment
-                assignedTo=assigned_to,
-                assignees=assignees,
-                assignStrategy=arguments.get("assign_strategy", "least_completed"),
-
-                # Notifications
-                notification=arguments.get("notification", bool(notification_metadata)),
-                notificationMetadata=notification_metadata,
-
-                # Organization & Priority
-                priority=arguments.get("priority"),
-                labels=arguments.get("labels", []),
-                labelsV2=labels_v2,
-
-                # Status & Visibility
-                isActive=arguments.get("is_active", True),
-                isPrivate=arguments.get("is_private", False),
-
-                # Gamification
-                points=arguments.get("points"),
-
-                # Advanced Features
-                subTasks=sub_tasks,
-                thingChore=arguments.get("thing_chore"),
-
-                # Completion Settings
-                completionWindow=arguments.get("completion_window"),
-                requireApproval=arguments.get("require_approval", False),
-
-                # Advanced Scheduling
-                deadlineOffset=arguments.get("deadline_offset"),
-            )
-
-            chore = await client.create_chore(chore_create)
-
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Successfully created chore '{chore.name}' (ID: {chore.id})\n\n{json.dumps(chore.model_dump(), indent=2)}",
-                )
-            ]
-
-        elif name == "complete_chore":
-            chore_id = arguments["chore_id"]
-            completed_by = arguments.get("completed_by")
-
-            chore = await client.complete_chore(chore_id, completed_by=completed_by)
-
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Successfully completed chore '{chore.name}' (ID: {chore.id})\n\n"
-                    + json.dumps(chore.model_dump(), indent=2),
-                )
-            ]
+            return await _handle_create_chore(c, arguments)
 
         elif name == "update_chore":
-            chore_id = arguments.pop("chore_id")
-
-            # Build ChoreUpdate model from provided arguments
-            # Filter out None values to only include fields that should be updated
-            update_data = {k: v for k, v in arguments.items() if v is not None}
-
-            try:
-                update = ChoreUpdate(**update_data)
-                chore = await client.update_chore(chore_id, update)
-
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Successfully updated chore '{chore.name}' (ID: {chore.id})\n\n"
-                        + json.dumps(chore.model_dump(), indent=2),
-                    )
-                ]
-            except ValueError as e:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Validation error: {str(e)}",
-                    )
-                ]
+            return await _handle_update_chore(c, arguments)
 
         elif name == "delete_chore":
-            chore_id = arguments["chore_id"]
+            await c.delete_chore(arguments["chore_id"])
+            return [TextContent(type="text", text=f"Deleted chore {arguments['chore_id']}.")]
 
-            await client.delete_chore(chore_id)
+        elif name == "list_archived_chores":
+            chores = await c.list_archived_chores()
+            if not chores:
+                return [TextContent(type="text", text="No archived chores.")]
+            result = {"count": len(chores), "chores": [ch.model_dump() for ch in chores]}
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Successfully deleted chore with ID {chore_id}.",
-                )
-            ]
-
-        elif name == "update_chore_priority":
-            chore_id = arguments["chore_id"]
-            priority = arguments["priority"]
-
-            chore = await client.update_chore_priority(chore_id, priority)
-
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Successfully updated chore '{chore.name}' (ID: {chore.id}) priority to {priority}\n\n"
-                    + json.dumps(chore.model_dump(), indent=2),
-                )
-            ]
-
-        elif name == "update_chore_assignee":
-            chore_id = arguments["chore_id"]
-            user_id = arguments["user_id"]
-
-            chore = await client.update_chore_assignee(chore_id, user_id)
-
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Successfully reassigned chore '{chore.name}' (ID: {chore.id}) to user {user_id}\n\n"
-                    + json.dumps(chore.model_dump(), indent=2),
-                )
-            ]
+        # ── Chore Actions ───────────────────────────────────────
+        elif name == "complete_chore":
+            chore = await c.complete_chore(arguments["chore_id"], completed_by=arguments.get("completed_by"))
+            return [TextContent(type="text", text=f"Completed '{chore.name}' (ID: {chore.id}).\n\n{json.dumps(chore.model_dump(), indent=2)}")]
 
         elif name == "skip_chore":
-            chore_id = arguments["chore_id"]
+            chore = await c.skip_chore(arguments["chore_id"])
+            return [TextContent(type="text", text=f"Skipped '{chore.name}'. Next due: {chore.nextDueDate}")]
 
-            chore = await client.skip_chore(chore_id)
+        elif name == "archive_chore":
+            await c.archive_chore(arguments["chore_id"])
+            return [TextContent(type="text", text=f"Archived chore {arguments['chore_id']}.")]
 
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Successfully skipped chore '{chore.name}' (ID: {chore.id}). "
-                    f"Next due date: {chore.nextDueDate}\n\n"
-                    + json.dumps(chore.model_dump(), indent=2),
-                )
-            ]
+        elif name == "unarchive_chore":
+            await c.unarchive_chore(arguments["chore_id"])
+            return [TextContent(type="text", text=f"Unarchived chore {arguments['chore_id']}.")]
 
+        elif name == "approve_chore":
+            await c.approve_chore(arguments["chore_id"])
+            return [TextContent(type="text", text=f"Approved chore {arguments['chore_id']}.")]
+
+        elif name == "reject_chore":
+            await c.reject_chore(arguments["chore_id"])
+            return [TextContent(type="text", text=f"Rejected chore {arguments['chore_id']}.")]
+
+        elif name == "update_due_date":
+            await c.update_due_date(arguments["chore_id"], arguments["due_date"])
+            return [TextContent(type="text", text=f"Updated due date for chore {arguments['chore_id']} to {arguments['due_date']}.")]
+
+        # ── Timer ────────────────────────────────────────────────
+        elif name == "start_chore_timer":
+            await c.start_chore(arguments["chore_id"])
+            return [TextContent(type="text", text=f"Started timer for chore {arguments['chore_id']}.")]
+
+        elif name == "pause_chore_timer":
+            await c.pause_chore(arguments["chore_id"])
+            return [TextContent(type="text", text=f"Paused timer for chore {arguments['chore_id']}.")]
+
+        # ── Subtasks ─────────────────────────────────────────────
         elif name == "update_subtask_completion":
-            chore_id = arguments["chore_id"]
-            subtask_id = arguments["subtask_id"]
-            completed = arguments["completed"]
+            chore = await c.update_subtask_completion(
+                arguments["chore_id"], arguments["subtask_id"], arguments["completed"]
+            )
+            total = len(chore.subTasks)
+            done = sum(1 for st in chore.subTasks if st.get('completedAt'))
+            pct = (done / total * 100) if total > 0 else 0
+            lines = [f"  {'[x]' if st.get('completedAt') else '[ ]'} {st.get('name', '?')} (ID: {st.get('id')})" for st in chore.subTasks]
+            return [TextContent(type="text", text=f"Updated subtask. Progress: {done}/{total} ({pct:.0f}%)\n\n" + "\n".join(lines))]
 
-            chore = await client.update_subtask_completion(chore_id, subtask_id, completed)
+        elif name == "create_subtask":
+            chore = await c.get_chore(arguments["chore_id"])
+            if not chore:
+                return [TextContent(type="text", text=f"Chore {arguments['chore_id']} not found.")]
+            # Add new subtask with negative ID (API converts to positive)
+            existing = list(chore.subTasks)
+            new_order = max((st.get('orderId', 0) for st in existing), default=-1) + 1
+            new_id = -(new_order + 1)  # Negative IDs for new subtasks
+            existing.append({
+                "id": new_id, "orderId": new_order, "name": arguments["name"],
+                "completedAt": None, "completedBy": 0, "parentId": None,
+            })
+            update = ChoreUpdate(subTasks=existing)
+            updated = await c.update_chore(arguments["chore_id"], update)
+            return [TextContent(type="text", text=f"Added subtask '{arguments['name']}' to chore '{updated.name}'.\n\nSubtasks: {len(updated.subTasks)}")]
 
-            # Calculate subtask progress
-            total_subtasks = len(chore.subTasks)
-            completed_subtasks = sum(1 for st in chore.subTasks if st.get('completedAt'))
-            progress_pct = (completed_subtasks / total_subtasks * 100) if total_subtasks > 0 else 0
+        elif name == "delete_subtask":
+            chore = await c.get_chore(arguments["chore_id"])
+            if not chore:
+                return [TextContent(type="text", text=f"Chore {arguments['chore_id']} not found.")]
+            filtered = [st for st in chore.subTasks if st.get('id') != arguments["subtask_id"]]
+            if len(filtered) == len(chore.subTasks):
+                return [TextContent(type="text", text=f"Subtask {arguments['subtask_id']} not found in chore {arguments['chore_id']}.")]
+            update = ChoreUpdate(subTasks=filtered)
+            updated = await c.update_chore(arguments["chore_id"], update)
+            return [TextContent(type="text", text=f"Removed subtask {arguments['subtask_id']} from chore '{updated.name}'. Remaining: {len(updated.subTasks)}")]
 
-            # Format subtask list
-            subtasks_text = "\n".join([
-                f"  {'✅' if st.get('completedAt') else '⬜'} {st.get('name', 'Unnamed')} (ID: {st.get('id')})"
-                for st in chore.subTasks
-            ])
+        elif name == "convert_chore_to_subtask":
+            source = await c.get_chore(arguments["source_chore_id"])
+            if not source:
+                return [TextContent(type="text", text=f"Source chore {arguments['source_chore_id']} not found.")]
+            target = await c.get_chore(arguments["target_chore_id"])
+            if not target:
+                return [TextContent(type="text", text=f"Target chore {arguments['target_chore_id']} not found.")]
+            # Add source chore name as subtask on target
+            existing = list(target.subTasks)
+            new_order = max((st.get('orderId', 0) for st in existing), default=-1) + 1
+            existing.append({
+                "id": -(new_order + 1), "orderId": new_order, "name": source.name,
+                "completedAt": None, "completedBy": 0, "parentId": None,
+            })
+            update = ChoreUpdate(subTasks=existing)
+            await c.update_chore(arguments["target_chore_id"], update)
+            # Delete the source chore
+            await c.delete_chore(arguments["source_chore_id"])
+            return [TextContent(type="text", text=f"Converted '{source.name}' (ID: {source.id}) into subtask of '{target.name}' (ID: {target.id}), and deleted the original chore.")]
 
-            return [
-                TextContent(
-                    type="text",
-                    text=f"✅ Successfully updated subtask {subtask_id} on chore '{chore.name}' (ID: {chore.id})\n\n"
-                    f"📊 Progress: {completed_subtasks}/{total_subtasks} subtasks complete ({progress_pct:.0f}%)\n\n"
-                    f"Subtasks:\n{subtasks_text}",
-                )
-            ]
-
+        # ── Labels ───────────────────────────────────────────────
         elif name == "list_labels":
-            labels = await client.get_labels()
-
-            # Format labels for display
-            labels_text = "Available Labels:\n\n"
-            for label in labels:
-                color_info = f" (Color: {label.color})" if label.color else ""
-                labels_text += f"- ID {label.id}: {label.name}{color_info}\n"
-
+            labels = await c.get_labels()
             if not labels:
-                labels_text = "No labels found in this circle."
-
-            return [
-                TextContent(
-                    type="text",
-                    text=labels_text,
-                )
-            ]
+                return [TextContent(type="text", text="No labels found.")]
+            lines = [f"- ID {lb.id}: {lb.name}" + (f" ({lb.color})" if lb.color else "") for lb in labels]
+            return [TextContent(type="text", text="Labels:\n" + "\n".join(lines))]
 
         elif name == "create_label":
-            name_arg = arguments["name"]
-            color = arguments.get("color")
-
-            label = await client.create_label(name=name_arg, color=color)
-
-            color_info = f" with color {label.color}" if label.color else ""
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Successfully created label '{label.name}' (ID: {label.id}){color_info}.",
-                )
-            ]
+            label = await c.create_label(name=arguments["name"], color=arguments.get("color"))
+            return [TextContent(type="text", text=f"Created label '{label.name}' (ID: {label.id}).")]
 
         elif name == "update_label":
-            label_id = arguments["label_id"]
-            name_arg = arguments["name"]
-            color = arguments.get("color")
-
-            label = await client.update_label(label_id=label_id, name=name_arg, color=color)
-
-            color_info = f" with color {label.color}" if label.color else ""
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Successfully updated label ID {label.id} to '{label.name}'{color_info}.",
-                )
-            ]
+            label = await c.update_label(label_id=arguments["label_id"], name=arguments["name"], color=arguments.get("color"))
+            return [TextContent(type="text", text=f"Updated label {label.id} to '{label.name}'.")]
 
         elif name == "delete_label":
-            label_id = arguments["label_id"]
+            await c.delete_label(arguments["label_id"])
+            return [TextContent(type="text", text=f"Deleted label {arguments['label_id']}.")]
 
-            await client.delete_label(label_id)
-
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Successfully deleted label with ID {label_id}.",
-                )
-            ]
-
-        elif name == "get_circle_members":
-            members = await client.get_circle_members()
-
-            # Format member information
-            member_list = []
-            for member in members:
-                role_emoji = "👑" if member.role == "admin" else "👤"
-                status_emoji = "✅" if member.isActive else "❌"
-                display_name = member.displayName or "(no display name)"
-
-                member_info = (
-                    f"{role_emoji} {status_emoji} {member.username}\n"
-                    f"  User ID: {member.userId}\n"
-                    f"  Display Name: {display_name}\n"
-                    f"  Role: {member.role}\n"
-                    f"  Points: {member.points} (Redeemed: {member.pointsRedeemed})"
-                )
-                member_list.append(member_info)
-
-            result_text = (
-                f"Found {len(members)} member(s) in your circle:\n\n" +
-                "\n\n".join(member_list)
-            )
-
-            return [
-                TextContent(
-                    type="text",
-                    text=result_text,
-                )
-            ]
-
-        elif name == "list_circle_users":
-            users = await client.list_users()
-
-            # Format user information
-            user_list = []
-            for user in users:
-                status_emoji = "✅" if user.isActive else "❌"
-                display_name = user.displayName or "(no display name)"
-                email = user.email or "(no email)"
-                role = user.role or "member"
-
-                user_info = (
-                    f"{status_emoji} {user.username}\n"
-                    f"  User ID: {user.id}\n"
-                    f"  Display Name: {display_name}\n"
-                    f"  Email: {email}\n"
-                    f"  Role: {role}\n"
-                    f"  Points: {user.points} (Redeemed: {user.pointsRedeemed})"
-                )
-                user_list.append(user_info)
-
-            result_text = (
-                f"Found {len(users)} user(s) in your circle:\n\n" +
-                "\n\n".join(user_list)
-            )
-
-            return [
-                TextContent(
-                    type="text",
-                    text=result_text,
-                )
-            ]
+        # ── Users ────────────────────────────────────────────────
+        elif name == "list_circle_members":
+            members = await c.get_circle_members()
+            lines = []
+            for m in members:
+                role_tag = " (admin)" if m.role == "admin" else ""
+                display = m.displayName or m.username
+                lines.append(f"- {display}{role_tag} — ID: {m.userId}, points: {m.points}")
+            return [TextContent(type="text", text=f"{len(members)} member(s):\n" + "\n".join(lines))]
 
         elif name == "get_user_profile":
-            profile = await client.get_user_profile()
+            profile = await c.get_user_profile()
+            return [TextContent(type="text", text=json.dumps(profile.model_dump(), indent=2))]
 
-            # Format profile information
-            display_name = profile.displayName or "(not set)"
-            email = profile.email or "(not set)"
-            webhook = profile.webhook or "(not configured)"
-            storage_used_mb = (profile.storageUsed or 0) / (1024 * 1024)
-            storage_limit_mb = (profile.storageLimit or 0) / (1024 * 1024)
-
-            profile_info = (
-                f"👤 User Profile for {profile.username}\n\n"
-                f"📝 Basic Information:\n"
-                f"  User ID: {profile.id}\n"
-                f"  Username: {profile.username}\n"
-                f"  Display Name: {display_name}\n"
-                f"  Email: {email}\n"
-                f"  Active: {'✅ Yes' if profile.isActive else '❌ No'}\n\n"
-                f"🏆 Gamification:\n"
-                f"  Points Earned: {profile.points}\n"
-                f"  Points Redeemed: {profile.pointsRedeemed}\n"
-                f"  Net Points: {profile.points - profile.pointsRedeemed}\n\n"
-                f"💾 Storage:\n"
-                f"  Used: {storage_used_mb:.2f} MB\n"
-                f"  Limit: {storage_limit_mb:.2f} MB\n"
-                f"  Available: {storage_limit_mb - storage_used_mb:.2f} MB\n\n"
-                f"🔔 Notifications:\n"
-                f"  Webhook: {webhook}\n\n"
-                f"🕐 Account Dates:\n"
-                f"  Created: {profile.createdAt or 'Unknown'}\n"
-                f"  Updated: {profile.updatedAt or 'Unknown'}"
-            )
-
-            return [
-                TextContent(
-                    type="text",
-                    text=profile_info,
-                )
-            ]
-
+        # ── History ──────────────────────────────────────────────
         elif name == "get_chore_history":
-            chore_id = arguments["chore_id"]
-            history = await client.get_chore_history(chore_id)
-
+            chore_id = arguments.get("chore_id")
+            if chore_id:
+                history = await c.get_chore_history(chore_id)
+            else:
+                limit = arguments.get("limit", 50)
+                offset = arguments.get("offset", 0)
+                history = await c.get_all_chores_history(limit=limit, offset=offset)
             if not history:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"No completion history found for chore {chore_id}",
-                    )
-                ]
-
-            # Format history entries with emojis and clear structure
-            entries = []
-            for entry in history:
-                status_emoji = "✅" if entry.performedAt else "⏳"
-                # completedBy is user ID (integer), not username
-                completed_by = f"user {entry.completedBy}" if entry.completedBy else "Unknown"
-                # Field is performedAt, not completedAt
-                completed_at = entry.performedAt or "Unknown"
-                notes = entry.note or "No notes"
-
-                entry_text = (
-                    f"{status_emoji} Completion ID: {entry.id}\n"
-                    f"  👤 Completed by: {completed_by}\n"
-                    f"  📅 Completed at: {completed_at}\n"
-                    f"  📝 Notes: {notes}"
-                )
-                entries.append(entry_text)
-
-            history_text = (
-                f"📊 Completion History for Chore {chore_id}\n"
-                f"Total completions: {len(history)}\n\n"
-                + "\n\n".join(entries)
-            )
-
-            return [
-                TextContent(
-                    type="text",
-                    text=history_text,
-                )
-            ]
-
-        elif name == "get_all_chores_history":
-            limit = arguments.get("limit", 50)
-            offset = arguments.get("offset", 0)
-
-            history = await client.get_all_chores_history(limit=limit, offset=offset)
-
-            if not history:
-                return [
-                    TextContent(
-                        type="text",
-                        text="No completion history found",
-                    )
-                ]
-
-            # Group entries by chore for better readability
-            by_chore: dict[int, list] = {}
-            for entry in history:
-                chore_id = entry.choreId
-                if chore_id not in by_chore:
-                    by_chore[chore_id] = []
-                by_chore[chore_id].append(entry)
-
-            # Format grouped history
-            chore_sections = []
-            for chore_id, entries in by_chore.items():
-                # ChoreHistory has choreId (int), not choreName (string)
-                # Display as "Chore #123" since we don't have the name
-                chore_display = f"Chore #{chore_id}"
-                entry_lines = []
-
-                for entry in entries:
-                    status_emoji = "✅"
-                    # completedBy is user ID (integer), not username (string)
-                    completed_by = f"user {entry.completedBy}" if entry.completedBy else "Unknown"
-                    completed_at = entry.performedAt or "Unknown"
-
-                    entry_lines.append(
-                        f"  {status_emoji} {completed_at} by {completed_by}"
-                    )
-
-                section = (
-                    f"🏷️  {chore_display}\n"
-                    + "\n".join(entry_lines)
-                )
-                chore_sections.append(section)
-
-            pagination_hint = ""
-            if len(history) == limit:
-                pagination_hint = f"\n\n💡 Showing {limit} entries (offset: {offset}). Use offset={offset + limit} to see more."
-
-            history_text = (
-                f"📊 Chore Completion History\n"
-                f"Showing {len(history)} entries\n\n"
-                + "\n\n".join(chore_sections)
-                + pagination_hint
-            )
-
-            return [
-                TextContent(
-                    type="text",
-                    text=history_text,
-                )
-            ]
+                return [TextContent(type="text", text="No history found.")]
+            entries = [h.model_dump() for h in history]
+            return [TextContent(type="text", text=json.dumps({"count": len(entries), "history": entries}, indent=2))]
 
         elif name == "get_chore_details":
-            chore_id = arguments["chore_id"]
-            details = await client.get_chore_details(chore_id)
-
-            # Format detailed statistics
-            total_count = details.totalCompletedCount or 0
-            last_completed = details.lastCompletedDate or "Never"
-            # lastCompletedBy is user ID (integer), not username
-            last_user = f"user {details.lastCompletedBy}" if details.lastCompletedBy else "N/A"
-            # Field is averageDuration (float seconds), not avgDuration
-            avg_duration = f"{details.averageDuration:.1f}s" if details.averageDuration else "N/A"
-
-            # Format recent history
-            recent_history = []
-            # Field is completionHistory, not history
-            if details.completionHistory:
-                for entry in details.completionHistory[:5]:  # Show last 5
-                    # Field is performedAt, not completedAt
-                    completed_at = entry.performedAt or "Unknown"
-                    # completedBy is user ID (integer), not username
-                    completed_by = f"user {entry.completedBy}" if entry.completedBy else "Unknown"
-                    recent_history.append(f"  ✅ {completed_at} by {completed_by}")
-
-            history_text = "\n".join(recent_history) if recent_history else "  No completions yet"
-
-            details_text = (
-                f"📊 Chore Details: {details.name}\n"
-                f"ID: {details.id}\n\n"
-                f"📈 Statistics:\n"
-                f"  Total Completions: {total_count}\n"
-                f"  Average Duration: {avg_duration}\n\n"
-                f"🕐 Last Completion:\n"
-                f"  Date: {last_completed}\n"
-                f"  By: {last_user}\n\n"
-                f"📜 Recent History (last 5):\n"
-                f"{history_text}"
-            )
-
-            return [
-                TextContent(
-                    type="text",
-                    text=details_text,
-                )
-            ]
+            details = await c.get_chore_details(arguments["chore_id"])
+            return [TextContent(type="text", text=json.dumps(details.model_dump(), indent=2))]
 
         else:
-            return [
-                TextContent(
-                    type="text",
-                    text=f"Unknown tool: {name}",
-                )
-            ]
+            return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
     except httpx.HTTPStatusError as e:
-        # Log full error internally
-        logger.error(f"HTTP error executing tool {name}: {e.response.status_code} - {e.response.text}", exc_info=True)
-
-        # Try to extract actual error message from API response
-        api_error = None
-        try:
-            error_data = e.response.json()
-            api_error = error_data.get("error") or error_data.get("message")
-        except:
-            # If JSON parsing fails, try to get text
-            try:
-                api_error = e.response.text[:200] if e.response.text else None
-            except:
-                pass
-
-        # Return helpful error messages with hints
-        status_code = e.response.status_code
-        if status_code == 401:
-            error_msg = (
-                "Authentication failed. Please check your username and password.\n\n"
-                "💡 Hint: Verify credentials in environment variables or .env file:\n"
-                "   - DONETICK_BASE_URL\n"
-                "   - DONETICK_USERNAME\n"
-                "   - DONETICK_PASSWORD"
-            )
-        elif status_code == 403:
-            error_msg = (
-                "Permission denied. You may not have authorization for this operation.\n\n"
-                "💡 Hint: Verify that:\n"
-                "   - You have the correct credentials\n"
-                "   - The resource exists and belongs to your circle\n"
-                "   - You have the necessary permissions (e.g., only creators can delete chores)"
-            )
-        elif status_code == 404:
-            if "chore" in name:
-                error_msg = (
-                    "Chore not found.\n\n"
-                    "💡 Hint: Use list_chores to see available chores and their IDs.\n"
-                    "   Chores may have been deleted or the ID may be incorrect."
-                )
-            elif "label" in name:
-                error_msg = (
-                    "Label not found.\n\n"
-                    "💡 Hint: Use list_labels to see available labels and their IDs.\n"
-                    "   Labels may have been deleted or the ID may be incorrect."
-                )
-            else:
-                error_msg = "Resource not found."
-        elif status_code == 422:
-            base_msg = "Validation error. The API rejected the request parameters."
-            if api_error:
-                base_msg = f"Validation error: {api_error}"
-            error_msg = (
-                f"{base_msg}\n\n"
-                "💡 Hint: Common issues:\n"
-                "   - Invalid date format (use YYYY-MM-DD or RFC3339)\n"
-                "   - Invalid frequency_type (use: once, daily, weekly, days_of_the_week, etc.)\n"
-                "   - Missing required fields (name, due_date for some operations)\n"
-                "   - Invalid user or label IDs (use get_circle_members or list_labels first)"
-            )
-        elif status_code == 429:
-            error_msg = (
-                "Rate limit exceeded. The server is receiving too many requests.\n\n"
-                "💡 Hint: Wait a few seconds before retrying. The rate limit is\n"
-                "   typically 10 requests per second."
-            )
-        elif 400 <= status_code < 500:
-            # For 400-level errors, show the actual API error prominently
-            if api_error:
-                error_msg = (
-                    f"API Error: {api_error}\n\n"
-                    "💡 Hint: Review the error message above and check:\n"
-                    "   - Required fields are provided\n"
-                    "   - Data types match expectations (IDs are integers, names are strings)\n"
-                    "   - Values are in correct format (dates, colors, etc.)\n"
-                    "   - User IDs exist in your circle (use list_circle_users to check)"
-                )
-            else:
-                error_msg = (
-                    f"Request failed with status {status_code}. Please check your input.\n\n"
-                    "💡 Hint: Review the tool's input parameters and ensure:\n"
-                    "   - Required fields are provided\n"
-                    "   - Data types match expectations (IDs are integers, names are strings)\n"
-                    "   - Values are in correct format (dates, colors, etc.)"
-                )
-        else:
-            # For 5xx errors, include API error if available
-            if api_error:
-                error_msg = (
-                    f"Server error ({status_code}): {api_error}\n\n"
-                    "💡 Hint: This is a server-side issue. Try again in a moment.\n"
-                    "   If the problem persists, check the Donetick server status."
-                )
-            else:
-                error_msg = (
-                    f"API request failed with status {status_code}.\n\n"
-                    "💡 Hint: This is likely a server-side issue. Try again in a moment.\n"
-                    "   If the problem persists, check the Donetick server status."
-                )
-
-        return [TextContent(type="text", text=f"Error: {error_msg}")]
-
-    except httpx.TimeoutException as e:
-        logger.error(f"Timeout executing tool {name}: {e}", exc_info=True)
-        return [TextContent(
-            type="text",
-            text=(
-                "Error: Request timed out.\n\n"
-                "💡 Hint: The Donetick server took too long to respond. This could mean:\n"
-                "   - The server is under heavy load\n"
-                "   - Network connectivity issues\n"
-                "   - The server may be down\n"
-                "Try again in a few moments."
-            )
-        )]
-
+        return _handle_http_error(name, e)
+    except httpx.TimeoutException:
+        return [TextContent(type="text", text="Error: Request timed out. Try again.")]
     except ValueError as e:
-        # Validation errors (safe to expose)
-        logger.warning(f"Validation error in tool {name}: {e}")
-        return [TextContent(
-            type="text",
-            text=(
-                f"Validation Error: {str(e)}\n\n"
-                "💡 Hint: This is a data validation error. Check that:\n"
-                "   - All required parameters are provided\n"
-                "   - Data types are correct (numbers as integers, text as strings)\n"
-                "   - Values are in expected format (dates, emails, URLs, etc.)"
-            )
-        )]
-
+        return [TextContent(type="text", text=f"Validation error: {e}")]
     except Exception as e:
-        # Log full error internally
-        logger.error(f"Unexpected error executing tool {name}: {e}", exc_info=True)
+        logger.error(f"Error in tool {name}: {e}", exc_info=True)
+        return [TextContent(type="text", text="Error: An unexpected error occurred. Check server logs.")]
 
-        # Return generic error to user (don't leak internals)
-        return [TextContent(
-            type="text",
-            text=(
-                "Error: An unexpected error occurred while processing your request.\n\n"
-                "💡 Hint: This is an internal error. Please:\n"
-                "   - Check the server logs for details\n"
-                "   - Try the operation again\n"
-                "   - If the problem persists, report it as a bug"
-            )
-        )]
 
+# ==============================================================================
+# Handler Helpers
+# ==============================================================================
+
+async def _handle_create_chore(c: DonetickClient, args: dict) -> list[TextContent]:
+    """Handle create_chore with username lookups, anyone-default, and transformations."""
+    # ── Assignment ──
+    assigned_to = None
+    assignees = []
+    usernames = args.get("usernames", [])
+    assign_strategy = args.get("assign_strategy")
+
+    if usernames:
+        # Specific users requested
+        username_map = await c.lookup_user_ids(usernames)
+        missing = [u for u in usernames if u not in (username_map or {})]
+        if missing:
+            return [TextContent(type="text", text=f"Error: User(s) not found: {', '.join(missing)}. Use list_circle_members to see available users.")]
+        assigned_to = username_map[usernames[0]]
+        assignees = [{"userId": uid} for uid in username_map.values()]
+        if not assign_strategy:
+            assign_strategy = "least_completed"
+    else:
+        # Default: assign to ANYONE in the circle (all members, round-robin)
+        members = await c.get_circle_members()
+        if members:
+            assignees = [{"userId": m.userId} for m in members if m.isActive]
+            if assignees:
+                assigned_to = assignees[0]["userId"]
+            if not assign_strategy:
+                assign_strategy = "round_robin"
+
+    if not assign_strategy:
+        assign_strategy = "least_completed"
+
+    # ── Labels ──
+    labels_v2 = []
+    label_names = args.get("label_names", [])
+    if label_names:
+        label_map = await c.lookup_label_ids(label_names)
+        missing = [n for n in label_names if n not in (label_map or {})]
+        if missing:
+            return [TextContent(type="text", text=f"Error: Label(s) not found: {', '.join(missing)}. Use list_labels to see available, or create_label to make new ones.")]
+        labels_v2 = [{"id": lid} for lid in label_map.values()]
+
+    # ── Frequency ──
+    frequency_type = args.get("frequency_type", "once")
+    frequency_metadata = {}
+    days_of_week = args.get("days_of_week", [])
+    time_of_day = args.get("time_of_day")
+    timezone = args.get("timezone", "America/New_York")
+
+    if days_of_week and frequency_type == "once":
+        frequency_type = "days_of_the_week"
+
+    if frequency_type == "days_of_the_week" and not days_of_week:
+        return [TextContent(type="text", text="Error: days_of_week is required for frequency_type='days_of_the_week'. Example: ['Mon','Wed','Fri']")]
+
+    if days_of_week or time_of_day:
+        frequency_metadata = c.transform_frequency_metadata(
+            frequency_type=frequency_type, days_of_week=days_of_week,
+            time=time_of_day, timezone=timezone,
+        )
+
+    # ── Notifications ──
+    notification_metadata = {}
+    remind_minutes = args.get("remind_minutes_before")
+    remind_at_due = args.get("remind_at_due_time", False)
+    nagging = args.get("enable_nagging", False)
+
+    if remind_minutes is not None or remind_at_due or nagging:
+        offset = -abs(remind_minutes) if remind_minutes else None
+        notification_metadata = c.transform_notification_metadata(
+            offset_minutes=offset, remind_at_due_time=remind_at_due, nagging=nagging,
+        )
+
+    # ── Subtasks ──
+    sub_tasks = []
+    subtask_names = args.get("subtask_names", [])
+    if subtask_names:
+        sub_tasks = c.transform_subtasks(subtask_names)
+
+    # ── Due date ──
+    due_date = args.get("due_date")
+    if not due_date and frequency_type != "once":
+        due_date = c.calculate_due_date(frequency_type, frequency_metadata, timezone)
+
+    # ── Build and create ──
+    chore_create = ChoreCreate(
+        name=args["name"],
+        description=args.get("description"),
+        dueDate=due_date,
+        frequencyType=frequency_type,
+        frequency=args.get("frequency", 1),
+        frequencyMetadata=frequency_metadata,
+        isRolling=args.get("is_rolling", False),
+        assignedTo=assigned_to,
+        assignees=assignees,
+        assignStrategy=assign_strategy,
+        notification=bool(notification_metadata) or False,
+        notificationMetadata=notification_metadata or None,
+        priority=args.get("priority"),
+        labelsV2=labels_v2,
+        isActive=True,
+        isPrivate=args.get("is_private", False),
+        points=args.get("points"),
+        subTasks=sub_tasks,
+        requireApproval=args.get("require_approval", False),
+    )
+
+    chore = await c.create_chore(chore_create)
+    return [TextContent(type="text", text=f"Created '{chore.name}' (ID: {chore.id})\n\n{json.dumps(chore.model_dump(), indent=2)}")]
+
+
+async def _handle_update_chore(c: DonetickClient, args: dict) -> list[TextContent]:
+    """Handle update_chore with label management and assignee lookups."""
+    chore_id = args.pop("chore_id")
+
+    # ── Label management ──
+    add_labels = args.pop("add_label_names", None)
+    remove_labels = args.pop("remove_label_names", None)
+    set_labels = args.pop("set_label_names", None)
+    labels_v2 = None
+
+    if add_labels or remove_labels or set_labels:
+        # Fetch current chore to get existing labels
+        current = await c.get_chore(chore_id)
+        if not current:
+            return [TextContent(type="text", text=f"Chore {chore_id} not found.")]
+
+        existing_labels = {lb.id: lb.name for lb in current.labelsV2}
+
+        if set_labels is not None:
+            # Replace all labels
+            label_map = await c.lookup_label_ids(set_labels)
+            missing = [n for n in set_labels if n not in (label_map or {})]
+            if missing:
+                return [TextContent(type="text", text=f"Error: Label(s) not found: {', '.join(missing)}")]
+            labels_v2 = [{"id": lid} for lid in label_map.values()]
+        else:
+            current_ids = set(existing_labels.keys())
+
+            if add_labels:
+                label_map = await c.lookup_label_ids(add_labels)
+                missing = [n for n in add_labels if n not in (label_map or {})]
+                if missing:
+                    return [TextContent(type="text", text=f"Error: Label(s) not found: {', '.join(missing)}")]
+                current_ids |= set(label_map.values())
+
+            if remove_labels:
+                label_map = await c.lookup_label_ids(remove_labels)
+                # Don't error on missing names during removal — just skip
+                current_ids -= set(label_map.values())
+
+            labels_v2 = [{"id": lid} for lid in current_ids]
+
+    # ── Assignee lookup ──
+    assignee_usernames = args.pop("assignee_usernames", None)
+    if assignee_usernames:
+        username_map = await c.lookup_user_ids(assignee_usernames)
+        missing = [u for u in assignee_usernames if u not in (username_map or {})]
+        if missing:
+            return [TextContent(type="text", text=f"Error: User(s) not found: {', '.join(missing)}")]
+        # Set assignedTo to first user, assignees to all
+        user_ids = list(username_map.values())
+        args["assignedTo"] = user_ids[0]
+        args["assignees"] = [{"userId": uid} for uid in user_ids]
+
+    # Build update from remaining args
+    update_data = {k: v for k, v in args.items() if v is not None}
+    if labels_v2 is not None:
+        update_data["labelsV2"] = labels_v2
+
+    try:
+        update = ChoreUpdate(**update_data)
+        chore = await c.update_chore(chore_id, update)
+        return [TextContent(type="text", text=f"Updated '{chore.name}' (ID: {chore.id})\n\n{json.dumps(chore.model_dump(), indent=2)}")]
+    except ValueError as e:
+        return [TextContent(type="text", text=f"Validation error: {e}")]
+
+
+def _handle_http_error(tool_name: str, e: httpx.HTTPStatusError) -> list[TextContent]:
+    """Format HTTP errors with helpful hints."""
+    logger.error(f"HTTP error in {tool_name}: {e.response.status_code} - {e.response.text}", exc_info=True)
+
+    api_error = None
+    try:
+        error_data = e.response.json()
+        api_error = error_data.get("error") or error_data.get("message")
+    except Exception:
+        try:
+            api_error = e.response.text[:200] if e.response.text else None
+        except Exception:
+            pass
+
+    code = e.response.status_code
+    if code == 401:
+        msg = "Authentication failed. Check DONETICK_USERNAME and DONETICK_PASSWORD."
+    elif code == 403:
+        msg = "Permission denied. You may not have access to this resource."
+    elif code == 404:
+        msg = "Not found. Use list_chores or list_labels to see available IDs."
+    elif code == 422:
+        msg = f"Validation error: {api_error or 'Check input format.'}"
+    elif code == 429:
+        msg = "Rate limit exceeded. Wait a moment and retry."
+    elif 400 <= code < 500:
+        msg = f"API error ({code}): {api_error or 'Check input parameters.'}"
+    else:
+        msg = f"Server error ({code}): {api_error or 'Try again later.'}"
+
+    return [TextContent(type="text", text=f"Error: {msg}")]
+
+
+# ==============================================================================
+# Server Lifecycle
+# ==============================================================================
 
 async def cleanup():
     """Cleanup resources on shutdown."""
@@ -1576,7 +958,6 @@ def sanitize_url(url: str) -> str:
     """Sanitize URL for logging by removing sensitive parts."""
     try:
         parsed = urllib.parse.urlparse(url)
-        # Only show scheme and path, hide host details
         return f"{parsed.scheme}://[SERVER]{parsed.path}"
     except Exception:
         return "[URL]"
@@ -1585,6 +966,7 @@ def sanitize_url(url: str) -> str:
 async def main_async_stdio():
     """Run the MCP server with stdio transport."""
     import sys
+
     from mcp.server.stdio import stdio_server
 
     print(f"Donetick MCP Server v{__version__} starting (stdio)...", file=sys.stderr)

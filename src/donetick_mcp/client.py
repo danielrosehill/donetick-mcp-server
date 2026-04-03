@@ -5,12 +5,23 @@ import json as json_lib
 import logging
 import random
 import time
-from typing import Any, Dict, Optional
+from datetime import UTC
+from typing import Any
 
 import httpx
 
 from .config import config
-from .models import Chore, ChoreCreate, ChoreDetail, ChoreHistory, ChoreUpdate, CircleMember, Label, User, UserProfile
+from .models import (
+    Chore,
+    ChoreCreate,
+    ChoreDetail,
+    ChoreHistory,
+    ChoreUpdate,
+    CircleMember,
+    Label,
+    User,
+    UserProfile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,11 +84,11 @@ class DonetickClient:
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        rate_limit_per_second: Optional[float] = None,
-        rate_limit_burst: Optional[int] = None,
+        base_url: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        rate_limit_per_second: float | None = None,
+        rate_limit_burst: int | None = None,
     ):
         """
         Initialize Donetick API client.
@@ -92,7 +103,7 @@ class DonetickClient:
         self.base_url = (base_url or config.donetick_base_url).rstrip("/")
         self.username = username or config.donetick_username
         self.password = password or config.donetick_password
-        self._jwt_token: Optional[str] = None
+        self._jwt_token: str | None = None
         self.rate_limiter = TokenBucket(
             rate=rate_limit_per_second or config.rate_limit_per_second,
             capacity=rate_limit_burst or config.rate_limit_burst,
@@ -285,8 +296,8 @@ class DonetickClient:
 
     async def list_chores(
         self,
-        filter_active: Optional[bool] = None,
-        assigned_to_user_id: Optional[int] = None,
+        filter_active: bool | None = None,
+        assigned_to_user_id: int | None = None,
     ) -> list[Chore]:
         """
         List all chores with optional filtering.
@@ -319,7 +330,7 @@ class DonetickClient:
         logger.info(f"Retrieved {len(chores)} chores")
         return chores
 
-    async def get_chore(self, chore_id: int) -> Optional[Chore]:
+    async def get_chore(self, chore_id: int) -> Chore | None:
         """
         Get a specific chore by ID.
 
@@ -529,7 +540,7 @@ class DonetickClient:
     async def complete_chore(
         self,
         chore_id: int,
-        completed_by: Optional[int] = None,
+        completed_by: int | None = None,
     ) -> Chore:
         """
         Mark a chore as complete.
@@ -716,8 +727,8 @@ class DonetickClient:
             if subtask.get('id') == subtask_id:
                 if completed:
                     # Mark as completed with current timestamp
-                    from datetime import datetime, timezone
-                    subtask['completedAt'] = datetime.now(timezone.utc).isoformat()
+                    from datetime import datetime
+                    subtask['completedAt'] = datetime.now(UTC).isoformat()
                     # Note: completedBy would ideally be set to current user ID
                     # but we don't track that in the client currently
                 else:
@@ -865,7 +876,7 @@ class DonetickClient:
         logger.info(f"Retrieved {len(labels)} labels")
         return labels
 
-    async def create_label(self, name: str, color: Optional[str] = None) -> Label:
+    async def create_label(self, name: str, color: str | None = None) -> Label:
         """
         Create a new label.
 
@@ -890,7 +901,7 @@ class DonetickClient:
         logger.info(f"Created label with ID: {label.id}")
         return label
 
-    async def update_label(self, label_id: int, name: str, color: Optional[str] = None) -> Label:
+    async def update_label(self, label_id: int, name: str, color: str | None = None) -> Label:
         """
         Update an existing label.
 
@@ -933,6 +944,65 @@ class DonetickClient:
         await self._request("DELETE", f"/api/v1/labels/{label_id}")
         logger.info(f"Deleted label {label_id}")
         return True
+
+    # ==================== Archive & Status Operations ====================
+
+    async def archive_chore(self, chore_id: int) -> dict:
+        """Archive a chore (soft-delete / hide)."""
+        logger.info(f"Archiving chore {chore_id}")
+        data = await self._request("PUT", f"/api/v1/chores/{chore_id}/archive")
+        return data
+
+    async def unarchive_chore(self, chore_id: int) -> dict:
+        """Unarchive a previously archived chore."""
+        logger.info(f"Unarchiving chore {chore_id}")
+        data = await self._request("PUT", f"/api/v1/chores/{chore_id}/unarchive")
+        return data
+
+    async def list_archived_chores(self) -> list[Chore]:
+        """List all archived chores."""
+        logger.info("Fetching archived chores")
+        data = await self._request("GET", "/api/v1/chores/archived")
+        chores_data = data.get('res', data) if isinstance(data, dict) else data
+        if not isinstance(chores_data, list):
+            chores_data = []
+        return [Chore(**c) for c in chores_data]
+
+    async def approve_chore(self, chore_id: int) -> dict:
+        """Approve a chore completion that requires approval."""
+        logger.info(f"Approving chore {chore_id}")
+        data = await self._request("POST", f"/api/v1/chores/{chore_id}/approve")
+        return data
+
+    async def reject_chore(self, chore_id: int) -> dict:
+        """Reject a chore completion that requires approval."""
+        logger.info(f"Rejecting chore {chore_id}")
+        data = await self._request("POST", f"/api/v1/chores/{chore_id}/reject")
+        return data
+
+    async def update_due_date(self, chore_id: int, due_date: str) -> dict:
+        """Update a chore's due date via the dedicated endpoint."""
+        logger.info(f"Updating due date for chore {chore_id} to {due_date}")
+        data = await self._request(
+            "PUT",
+            f"/api/v1/chores/{chore_id}/dueDate",
+            json={"nextDueDate": due_date},
+        )
+        return data
+
+    # ==================== Timer Operations ====================
+
+    async def start_chore(self, chore_id: int) -> dict:
+        """Start the timer for a chore."""
+        logger.info(f"Starting timer for chore {chore_id}")
+        data = await self._request("PUT", f"/api/v1/chores/{chore_id}/start")
+        return data
+
+    async def pause_chore(self, chore_id: int) -> dict:
+        """Pause the timer for a chore."""
+        logger.info(f"Pausing timer for chore {chore_id}")
+        data = await self._request("PUT", f"/api/v1/chores/{chore_id}/pause")
+        return data
 
     # ==================== Transformation Helpers ====================
 
@@ -1053,6 +1123,7 @@ class DonetickClient:
             ValueError: If frequency_type is 'days_of_the_week' but days_of_week is not provided
         """
         from datetime import datetime
+
         import pytz
 
         # Validate required parameters for days_of_the_week
@@ -1214,6 +1285,7 @@ class DonetickClient:
             Due date in RFC3339 format
         """
         from datetime import datetime, timedelta
+
         import pytz
 
         tz = pytz.timezone(timezone)
